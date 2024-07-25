@@ -436,7 +436,7 @@ class SpecMAE(nn.Module):
         """
         p = 1 #self.patch_embed.patch_size[0]
         h = w = int((x.shape[2]/self.spec_patch_size) ** .5)
-        print(h,w)
+        #print(h,w)
         #assert h * w == x.shape[1]
 
         imgs = x.reshape(shape=(x.shape[0], self.num_tokens * self.spec_patch_size, h, w))

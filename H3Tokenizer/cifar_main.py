@@ -15,9 +15,9 @@ import matplotlib.pyplot as plt
 import timm
 import timm.optim.optim_factory as optim_factory
 
-import util.misc as misc
-from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from model_spat_spec import SpatSpecModel
+from models.hs_util import misc
+from models.hs_util.misc import NativeScalerWithGradNormCount as NativeScaler
+from models.model_spat_spec import SpatSpecModel
 from pytorch_lightning.strategies import DDPStrategy
 import time
 
@@ -31,7 +31,7 @@ class MAEPreTrainer(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         samples, _ = batch
-        loss, pred, mask = self.model(samples, mask_ratio=self.config['model']['mask_ratio'])
+        loss, _, _, _ = self.model(samples)
         
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
@@ -40,14 +40,14 @@ class MAEPreTrainer(pl.LightningModule):
         self.log('learning_rate', lr, on_step=True, on_epoch=False, prog_bar=True, logger=True)
 
         # Run sanity check every N steps
-        if self.global_step % self.config['training']['sanity_check_frequency'] == 0:
-            sanity_check(samples, pred, mask)
+        #if self.global_step % self.config['training']['sanity_check_frequency'] == 0:
+        #    sanity_check(samples, pred, mask)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         samples, _ = batch
-        loss, _, _ = self.model(samples, mask_ratio=self.config['model']['mask_ratio'])
+        loss, _, _, _ = self.model(samples)
         self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
 

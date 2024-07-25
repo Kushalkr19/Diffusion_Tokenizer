@@ -474,7 +474,6 @@ class SpatMAE(nn.Module):
 
 
 def spat_mae_b(args, inchannels=3):
-    print(args)
     backbone = SpatMAE(
         img_size=args['image_size'],
         in_chans=inchannels,

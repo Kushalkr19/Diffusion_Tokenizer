@@ -1,0 +1,3 @@
+output_dir_cifar10
+log_dir_cifar10
+data

@@ -108,7 +108,10 @@ class SpatSpecModel(nn.Module):
 
         return spat_dec, spec_dec
 
-    def forward(self, x, nan_mask, enc_mask=0.0):
+    def forward(self, x, nan_mask=None, enc_mask=0.0):
+        
+        if not nan_mask:
+            nan_mask = torch.ones_like(x, dtype=bool)
         
         #Encoder
         fused_proj, spat_ids_restore, spec_ids_restore, spec_mask, _ = self.encoder(x, enc_mask)

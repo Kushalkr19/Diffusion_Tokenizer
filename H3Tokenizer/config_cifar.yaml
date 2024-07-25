@@ -1,16 +1,36 @@
 # config.yaml
+
 model:
-  name: 'spat_mae_b'
-  image_size: 32  # CIFAR-10 images are 32x32
+  patch_size: 8
+  image_size: 32
+  use_ckpt: false
+  num_tokens: 1
+  num_channels: 3
+  enc_dim: 768
   mask_ratio: 0.0
-  norm_pix_loss: True
-  in_channels: 3  # CIFAR-10 has 3 color channels
-  patch_size: 4  # Smaller patch size for CIFAR-10
-  use_ckpt: False
+
+quantizer:
+  quant_type: lucid
+  latent_dim: 768
+  codebook_size: 65536
+  num_codebooks: 1
+  norm_codes: true
+  threshold_ema_dead_code: 2
+  code_replacement_policy: batch_random
+  sync_codebook: false
+  ema_decay: 0.99
+  commitment_weight: 0.25
+  norm_latents: false
+  kmeans_init: false
+
+debug: False
+
+loss:
+  norm_pix_loss: true
 
 training:
-  batch_size: 2048
-  epochs: 500  # Reduced for faster testing
+  batch_size: 1024
+  epochs: 20  # Reduced for faster testing
   accum_iter: 1
   use_ckpt: 'none'
   lr: 1.5e-3  # Adjusted for CIFAR-10
