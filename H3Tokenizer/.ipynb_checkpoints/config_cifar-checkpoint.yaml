@@ -1,0 +1,33 @@
+# config.yaml
+model:
+  name: 'spat_mae_b'
+  image_size: 32  # CIFAR-10 images are 32x32
+  mask_ratio: 0.0
+  norm_pix_loss: True
+  in_channels: 3  # CIFAR-10 has 3 color channels
+  patch_size: 4  # Smaller patch size for CIFAR-10
+  use_ckpt: False
+
+training:
+  batch_size: 2048
+  epochs: 500  # Reduced for faster testing
+  accum_iter: 1
+  use_ckpt: 'none'
+  lr: 1.5e-3  # Adjusted for CIFAR-10
+  min_lr: 0.0
+  weight_decay: 0.05
+  warmup_epochs: 50
+  sanity_check_frequency: 1000  # Run sanity check every 1000 steps
+
+data:
+  num_workers: 10
+  pin_mem: False
+
+output:
+  dir: './output_dir_cifar10'
+  log_dir: './log_dir_cifar10'
+
+system:
+  seed: 42
+  gpu_num: 4  # Adjust based on your system
+  port: null
