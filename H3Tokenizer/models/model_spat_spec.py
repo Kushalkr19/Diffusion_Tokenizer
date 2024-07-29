@@ -3,6 +3,7 @@ import torch.nn as nn
 from .models_mae_Spat import spat_mae_b
 from .models_mae_Spec import spec_mae_b
 from .quantizers import VectorQuantizerLucid, Memcodes
+import os
 
 class SpatSpecModel(nn.Module):
     def __init__(self, config):
@@ -17,6 +18,12 @@ class SpatSpecModel(nn.Module):
         self.spatial_encoder = spat_mae_b(model_args, model_args['num_channels'])
         self.spectral_encoder = spec_mae_b(model_args, model_args['num_channels'])
         
+        print('Loading pre-trained weights')
+        #Load Pretrained
+        self._load_weights_spat()
+        self._load_weights_spec()
+        
+        
         # Set up quantizer
         self.quantizer = self._get_quantizer()
         
@@ -29,6 +36,45 @@ class SpatSpecModel(nn.Module):
         self.fusion_conv = nn.Conv2d(self.enc_dim * 2, self.enc_dim, 1)
         self.spat_to_spec_proj = nn.Linear(self.spat_size**2, self.num_spec_tokens)
         self.debug = config['debug']
+        self.spat_spec = config['model']['spat_spec']
+        
+    def _load_weights_spat(self, weights_root: str="/work/tpanambur_umass_edu/Experiments/Algorithm/Moon/fdl-2024-lunar/H3Tokenizer/models/hypersigma_weights/", name: str="spat-vit-base-ultra-checkpoint-1599.pth"):
+        """Loads matching weights into the SPATIAL model.
+
+        Args:
+            weights_root (str, optional): Path to where the weights are stored. Defaults to "H3Tokenizer/models/hypersigma_weights/".
+            name (str, optional): Filename of weights to load. Defaults to "spat-vit-base-ultra-checkpoint-1599.pth".
+        """
+        if not os.path.exists(os.path.join(weights_root, name)):
+            return 
+        model = torch.load(os.path.join(weights_root, name), map_location=torch.device('cpu'))
+        available_weight_keys = model['model'].keys()
+
+        for name, param in self.spatial_encoder.named_parameters():
+            if name in available_weight_keys:
+                if param.data.shape == model['model'][name].shape:
+                    param.data = model['model'][name]
+                    
+        print('=================Loaded Spat Weights==================')
+
+    def _load_weights_spec(self, weights_root: str="/work/tpanambur_umass_edu/Experiments/Algorithm/Moon/fdl-2024-lunar/H3Tokenizer/models/hypersigma_weights/", name: str="spec-vit-base-ultra-checkpoint-1599.pth"):
+        """Loads matching weights into the SPECTRAL model.
+
+        Args:
+            weights_root (str, optional): Path to where the weights are stored. Defaults to "H3Tokenizer/models/hypersigma_weights/".
+            name (str, optional): Filename of weights to load. Defaults to "spec-vit-base-ultra-checkpoint-1599.pth".
+        """
+        if not os.path.exists(os.path.join(weights_root, name)):
+            return 
+        model = torch.load(os.path.join(weights_root, name), map_location=torch.device('cpu'))
+        available_weight_keys = model['model'].keys()
+
+        for name, param in self.spectral_encoder.named_parameters():
+            if name in available_weight_keys:
+                if param.data.shape == model['model'][name].shape:
+                    param.data = model['model'][name]
+                    
+        print('=================Loaded Spec Weights==================')
 
     def _get_quantizer(self):
         # Get quantizer based on config
@@ -88,7 +134,7 @@ class SpatSpecModel(nn.Module):
 
         return fused_proj, spat_ids_restore, spec_ids_restore, spat_mask, spec_mask
 
-    def decoder(self, quant_enc, spat_ids_restore, spec_ids_restore, spec_mask):
+    def spat_spec_decoder(self, quant_enc, spat_ids_restore, spec_ids_restore, spec_mask):
         # Spatial decoding
         B,_,_,_ = quant_enc.shape
         spat_latent = quant_enc.reshape(B, self.enc_dim, -1).transpose(1, 2)
@@ -105,12 +151,32 @@ class SpatSpecModel(nn.Module):
         # Spectral decoding
         spec_dec, _ = self.spectral_encoder.forward_decoder(spec_latent_proj, spec_ids_restore, spec_mask)
         if self.debug: print("spec_dec:", spec_dec.shape)  # (B, 72, 128, 128)
+        
+        spat_dec = self.spatial_encoder.unpatchify(spat_dec)
+        spec_dec = self.spectral_encoder.unpatchify(spec_dec)
 
         return spat_dec, spec_dec
+    
+    
+    def spat_decoder(self, quant_enc, spat_ids_restore, spec_ids_restore, spec_mask):
+        # Spatial decoding
+        B,_,_,_ = quant_enc.shape
+        spat_latent = quant_enc.reshape(B, self.enc_dim, -1).transpose(1, 2)
+        if self.debug: print("spat_latent:", spat_latent.shape)
+        
+        spat_dec = self.spatial_encoder.forward_decoder(spat_latent, spat_ids_restore)
+        if self.debug: print("spat_dec:", spat_dec.shape)  # (B, 72, 128, 128)
+        
+        spat_dec = self.spatial_encoder.unpatchify(spat_dec)
+       
+        return spat_dec, None
 
     def forward(self, x, nan_mask=None, enc_mask=0.0):
         
-        if not nan_mask:
+        if self.debug: print("x:", x.shape)
+        if self.debug: print("nan_mask:", nan_mask.shape)
+        
+        if nan_mask is None:
             nan_mask = torch.ones_like(x, dtype=bool)
         
         #Encoder
@@ -121,32 +187,38 @@ class SpatSpecModel(nn.Module):
         if self.debug: print("quant_enc:", quant_enc.shape)  # (B, 768, 16, 16)
         
         #Decoder
-        spat_dec, spec_dec = self.decoder(quant_enc, spat_ids_restore, spec_ids_restore, spec_mask)
-        
-        #Loss
-        spat_dec = self.spatial_encoder.unpatchify(spat_dec)
-        spec_dec = self.spectral_encoder.unpatchify(spec_dec)
-        spat_recon_loss = self.recon_loss(x, spat_dec, nan_mask)
-        spec_recon_loss = self.recon_loss(x, spec_dec, nan_mask)
+        if self.spat_spec:
+            spat_dec, spec_dec = self.spat_spec_decoder(quant_enc, spat_ids_restore, spec_ids_restore, spec_mask)
+            spat_recon_loss = self.recon_loss(x, spat_dec, nan_mask)
+            spec_recon_loss = self.recon_loss(x, spec_dec, nan_mask)
+            spat_dec = spat_dec.detach().cpu()
+            spec_dec = spec_dec.detach().cpu()
+            
+        else:
+            spat_dec, spec_dec = self.spat_decoder(quant_enc, spat_ids_restore, spec_ids_restore, spec_mask)
+            spat_recon_loss = self.recon_loss(x, spat_dec, nan_mask)
+            spat_dec = spat_dec.detach().cpu()
+            spec_recon_loss = None
 
-        return spat_recon_loss, spec_recon_loss, code_loss, tokens
+        return spat_recon_loss, spec_recon_loss, code_loss, tokens, spat_dec, spec_dec
     
     def recon_loss(self, input, target, nan_mask):
-        nan_mask = nan_mask.bool()
+        nan_mask = ~nan_mask.bool()
 
         if self.norm_pix_loss:
-            # Normalizing target while ignoring masked out values
-            mean = (target * nan_mask).sum(dim=-1, keepdim=True) / nan_mask.sum(dim=-1, keepdim=True)
-            var = ((target - mean) ** 2 * nan_mask).sum(dim=-1, keepdim=True) / nan_mask.sum(dim=-1, keepdim=True)
-            target = (target - mean) / (var + 1.e-6).sqrt()
+            # Normalize target
+            mean = torch.sum(target * nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True) / torch.sum(nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True)
+            var = torch.sum((target - mean).pow(2) * nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True) / torch.sum(nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True)
+            target = torch.where(nan_mask.unsqueeze(1), (target - mean) / (var + 1.e-6).sqrt(), target)
 
-            # Apply the same normalization to the input to ensure consistency
-            mean_input = (input * nan_mask).sum(dim=-1, keepdim=True) / nan_mask.sum(dim=-1, keepdim=True)
-            var_input = ((input - mean_input) ** 2 * nan_mask).sum(dim=-1, keepdim=True) / nan_mask.sum(dim=-1, keepdim=True)
-            input = (input - mean_input) / (var_input + 1.e-6).sqrt()
+            # Normalize input
+            mean_input = torch.sum(input * nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True) / torch.sum(nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True)
+            var_input = torch.sum((input - mean_input).pow(2) * nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True) / torch.sum(nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True)
+            input = torch.where(nan_mask.unsqueeze(1), (input - mean_input) / (var_input + 1.e-6).sqrt(), input)
 
-        diff = input[nan_mask] - target[nan_mask]
-        loss = (diff ** 2).mean()
+        # Calculate loss only for non-nan values
+        diff = (input - target) * nan_mask
+        loss = torch.sum(diff.pow(2)) / torch.sum(nan_mask)
 
         return loss
     

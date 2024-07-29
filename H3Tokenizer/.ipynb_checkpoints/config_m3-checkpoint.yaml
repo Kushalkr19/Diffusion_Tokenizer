@@ -1,11 +1,11 @@
 # config.yaml
 
 model:
-  patch_size: 8
-  image_size: 32
+  patch_size: 16
+  image_size: 128
   use_ckpt: false
-  num_tokens: 1
-  num_channels: 3
+  num_tokens: 36
+  num_channels: 72
   enc_dim: 768
   mask_ratio: 0.0
   ckpt: ''
@@ -14,14 +14,14 @@ model:
 quantizer:
   quant_type: lucid
   latent_dim: 768
-  codebook_size: 16384
+  codebook_size: 32768
   num_codebooks: 1
   norm_codes: true
   threshold_ema_dead_code: 32.0
   code_replacement_policy: batch_random
   sync_codebook: True
   ema_decay: 0.99
-  commitment_weight: 1.0
+  commitment_weight: 0.25
   norm_latents: True
   kmeans_init: false
 
@@ -31,8 +31,8 @@ loss:
   norm_pix_loss: False
 
 training:
-  batch_size: 1024
-  epochs: 1000  # Reduced for faster testing
+  batch_size: 256
+  epochs: 100  # Reduced for faster testing
   accum_iter: 1
   use_ckpt: 'none'
   lr: 1.5e-3  # Adjusted for CIFAR-10
@@ -40,16 +40,23 @@ training:
   weight_decay: 0.0005
   warmup_epochs: 50
   sanity_check_frequency: 10  # Run sanity check every 1000 steps
+  
+testing:
+  batch_size: 512
+    
 
 data:
   num_workers: 10
   pin_mem: False
-
+  root: '/work/pi_mparente_umass_edu/data/LunarData/TokenizerData/'
+  name: 'caliberated_data'
+  
 output:
-  dir: './output_dir_cifar10'
-  log_dir: './log_dir_cifar10'
+  dir: './output_dir_all'
+  log_dir: './log_dir_m3'
 
 system:
   seed: 42
   gpu_num: 4  # Adjust based on your system
+  num_nodes: 2
   port: null

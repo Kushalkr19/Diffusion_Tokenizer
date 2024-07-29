@@ -235,9 +235,9 @@ def main(config_path):
         max_epochs=config['training']['epochs'],
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=config['system']['gpu_num'] if torch.cuda.is_available() else None,
-        strategy = 'ddp' if config['system']['gpu_num'] > 1 else 'auto',
+        #strategy = 'ddp' if config['system']['gpu_num'] > 1 else 'auto',
         num_nodes=config['system']['num_nodes'],
-        #strategy = DDPStrategy(find_unused_parameters=True),
+        strategy = DDPStrategy(find_unused_parameters=True),
         #precision=64,  # Using mixed precision
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger,

@@ -1,3 +1,8 @@
 output_dir_cifar10
 log_dir_cifar10
 data
+log_*
+output_*
+error_*
+output_*
+models/hypersigma*

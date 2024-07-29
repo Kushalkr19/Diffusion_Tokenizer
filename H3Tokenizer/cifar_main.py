@@ -20,6 +20,12 @@ from models.hs_util.misc import NativeScalerWithGradNormCount as NativeScaler
 from models.model_spat_spec import SpatSpecModel
 from pytorch_lightning.strategies import DDPStrategy
 import time
+from logger import MAELogger
+
+from torchmetrics import MeanSquaredError, MeanAbsoluteError, PeakSignalNoiseRatio, MultiScaleStructuralSimilarityIndexMeasure
+#from torchmetrics.image.fid import FrechetInceptionDistance
+#from torchmetrics.image.lpips import LearnedPerceptualImagePatchSimilarity
+#from torchmetrics.image.inception import InceptionScore
 
 class MAEPreTrainer(pl.LightningModule):
     def __init__(self, config):
@@ -28,28 +34,98 @@ class MAEPreTrainer(pl.LightningModule):
         self.config = config
         self.model =  SpatSpecModel(config) # CIFAR-10 has 3 channels
         self.loss_scaler = NativeScaler()
+        self.mae_logger = None
+        self.mse_metric = MeanSquaredError(squared=True)
+        self.mae_metric = MeanAbsoluteError()
+        self.psnr_metric = PeakSignalNoiseRatio(data_range=1.0)
+
+    def on_fit_start(self):
+        # Initialize the logger when the fit starts
+        self.mae_logger = MAELogger(self.logger)
 
     def training_step(self, batch, batch_idx):
         samples, _ = batch
-        loss, _, _, _ = self.model(samples)
+        spat_recon_loss, spec_recon_loss, code_loss, _, spat_recon, spec_recon = self.model(samples)
+        spat_recon = spat_recon.numpy()
         
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        if spec_recon is None:
+            total_loss = spat_recon_loss + code_loss
+        else:
+            spec_recon = spec_recon.numpy()
+            total_loss = 0.5 * spat_recon_loss + 0.5 * spec_recon_loss + code_loss
 
-        # Log learning rate
-        lr = self.optimizers().param_groups[0]['lr']
-        self.log('learning_rate', lr, on_step=True, on_epoch=False, prog_bar=True, logger=True)
+        losses = {
+            'spat_recon_loss': spat_recon_loss,
+            'spec_recon_loss': spec_recon_loss,
+            'code_loss': code_loss,
+            'total_loss': total_loss
+        }
 
-        # Run sanity check every N steps
-        #if self.global_step % self.config['training']['sanity_check_frequency'] == 0:
-        #    sanity_check(samples, pred, mask)
+        if self.trainer.is_global_zero:
+            self.mae_logger.log_losses(losses, self.global_step)
+            lr = self.optimizers().param_groups[0]['lr']
+            self.mae_logger.log_learning_rate(lr, self.global_step)
 
-        return loss
+            if self.global_step % self.config['training']['sanity_check_frequency'] == 0:
+                self.mae_logger.sanity_check(samples.detach().cpu().numpy(), spat_recon, spec_recon, self.global_step) 
+
+        return total_loss
 
     def validation_step(self, batch, batch_idx):
         samples, _ = batch
-        loss, _, _, _ = self.model(samples)
-        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        return loss
+        spat_recon_loss, spec_recon_loss, code_loss,  _,recon,_ = self.model(samples)
+        
+        if spec_recon_loss is None:
+            total_loss = spat_recon_loss + code_loss
+        else:
+            total_loss = 0.5 * spat_recon_loss + 0.5 * spec_recon_loss + code_loss
+            
+        losses = {
+            'spat_recon_loss': spat_recon_loss,
+            'spec_recon_loss': spec_recon_loss,
+            'code_loss': code_loss,
+            'total_loss': total_loss
+        }
+        if self.trainer.is_global_zero:
+            self.mae_logger.log_losses(losses, self.global_step, prefix='val_')
+        self.log('val_loss', total_loss) 
+        
+        
+        self.mse_metric(recon, samples.detach().cpu())
+        self.mae_metric(recon, samples.detach().cpu())
+        self.psnr_metric(recon, samples.detach().cpu())
+        #self.ms_ssim_metric(recon, samples.detach().cpu())
+        #self.fid_metric(samples.detach().cpu(), real=True)
+        #self.fid_metric(recon.clamp(0, 1), real=False)
+        
+        return total_loss
+    
+    def on_validation_epoch_end(self):
+        # Compute and log metrics
+        metrics = {
+            'val_MSE': self.mse_metric.compute(),
+            'val_MAE': self.mae_metric.compute(),
+            'val_PSNR': self.psnr_metric.compute(),
+            #'val_MS-SSIM': self.ms_ssim_metric.compute(),
+            #'val_FID': self.fid_metric.compute(),
+        }
+        
+        #inception_mean, inception_std = self.inception_metric.compute()
+        #metrics['val_InceptionMean'] = inception_mean
+        #metrics['val_InceptionStd'] = inception_std
+
+        # Log metrics
+        if self.trainer.is_global_zero:
+            self.mae_logger.log_metrics(metrics, self.global_step)
+
+        # Reset metrics
+        self.mse_metric.reset()
+        self.mae_metric.reset()
+        self.psnr_metric.reset()
+        #self.ms_ssim_metric.reset()
+        #self.fid_metric.reset()
+        #self.lpips_metric.reset()
+        #self.inception_metric.reset()
 
     def configure_optimizers(self):
         param_groups = optim_factory.param_groups_weight_decay(self.model, self.config['training']['weight_decay'])
@@ -62,51 +138,8 @@ class MAEPreTrainer(pl.LightningModule):
         )
         
         return [optimizer], [scheduler]
-
-
-    def sanity_check(self, samples, pred, mask):
-        # Select a random sample from the batch
-        idx = torch.randint(0, samples.shape[0], (1,)).item()
-        sample = samples[idx].unsqueeze(0)
     
 
-        # Get the reconstructed image
-        im_masked = self.model.unpatchify(pred)
-        im_masked = im_masked[idx].unsqueeze(0)
-
-        # Visualize the results
-        fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-         
-        # Original image
-        orig_img = sample.squeeze().permute(1, 2, 0).cpu().numpy()
-        axs[0].imshow(orig_img)
-        axs[0].set_title('Original')
-        axs[0].axis('off')
-
-        # Masked image
-        # Reshape mask to match image dimensions
-        mask = mask.unsqueeze(-1).repeat(1, 1, torch.prod(torch.tensor(samples.shape[-3:])).item()//self.config['model']['patch_size']**2)
-        mask_reshaped = self.model.unpatchify(mask)[idx].permute(1,2,0).cpu().numpy()
-        
-        
-        masked_img = orig_img * (1 - mask_reshaped)
-        axs[1].imshow(masked_img)
-        axs[1].set_title('Masked')
-        axs[1].axis('off')
-
-        # Reconstructed image
-        recon_img = im_masked.squeeze().permute(1, 2, 0).detach().cpu().numpy()
-        axs[2].imshow(recon_img)
-        axs[2].set_title('Reconstructed')
-        axs[2].axis('off')
-
-        plt.tight_layout()
-        
-        # Log the figure to TensorBoard
-        self.logger.experiment.add_figure('Sanity Check', fig, global_step=self.global_step)
-        plt.close(fig)
-        
-        
 def load_config(config_path):
     with open(config_path, 'r') as file:
         config = yaml.safe_load(file)
@@ -118,7 +151,7 @@ def main(config_path):
     pl.seed_everything(config['system']['seed'])
 
     transform_train = transforms.Compose([
-        transforms.RandomResizedCrop(32, scale=(0.2, 1.0), interpolation=3),  # 3 is bicubic
+        transforms.RandomResizedCrop(32, scale=(0.8, 1.0), interpolation=3),  # 3 is bicubic
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010])
