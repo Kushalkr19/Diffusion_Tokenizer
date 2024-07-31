@@ -14,7 +14,7 @@ model:
 quantizer:
   quant_type: lucid
   latent_dim: 768
-  codebook_size: 32768
+  codebook_size: 65536
   num_codebooks: 1
   norm_codes: true
   threshold_ema_dead_code: 32.0
@@ -31,7 +31,7 @@ loss:
   norm_pix_loss: False
 
 training:
-  batch_size: 256
+  batch_size: 200
   epochs: 100  # Reduced for faster testing
   accum_iter: 1
   use_ckpt: 'none'
@@ -42,21 +42,21 @@ training:
   sanity_check_frequency: 10  # Run sanity check every 1000 steps
   
 testing:
-  batch_size: 512
+  batch_size: 256
     
 
 data:
-  num_workers: 10
+  num_workers: 4
   pin_mem: False
   root: '/work/pi_mparente_umass_edu/data/LunarData/TokenizerData/'
   name: 'caliberated_data'
   
 output:
-  dir: './output_dir_all'
+  dir: './output_dir_all_cb65'
   log_dir: './log_dir_m3'
 
 system:
   seed: 42
   gpu_num: 4  # Adjust based on your system
-  num_nodes: 2
+  num_nodes: 1
   port: null

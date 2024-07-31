@@ -150,6 +150,7 @@ def load_config(config_path):
 
 def main(config_path):
     config = load_config(config_path)
+    print('Loaded Config')
     
     pl.seed_everything(config['system']['seed'])
 
@@ -191,7 +192,7 @@ def main(config_path):
     )
 
     # Split dataset into train and validation sets
-    train_size = int(0.98 * len(dataset))
+    train_size = int(0.80 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     print('The len of train_dataset: ', len(train_dataset))
@@ -230,14 +231,16 @@ def main(config_path):
     
 
     logger = TensorBoardLogger(save_dir=config['output']['log_dir'], name="mae_logs")
+    #export CUDA_VISIBLE_DEVICES=0,1,2,3 echo "Starting the main Python script..."CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
+    print('The GPU is available ', torch.cuda.is_available(), 'We have', torch.cuda.device_count())
 
     trainer = pl.Trainer(
         max_epochs=config['training']['epochs'],
-        accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        devices=config['system']['gpu_num'] if torch.cuda.is_available() else None,
-        strategy = 'ddp' if config['system']['gpu_num'] > 1 else 'auto',
+        accelerator="gpu", #if torch.cuda.is_available() else "cpu",
+        devices=config['system']['gpu_num'], #if torch.cuda.is_available() else None,
+        #strategy = 'ddp', # if config['system']['gpu_num'] > 1 else 'auto'
         num_nodes=config['system']['num_nodes'],
-        #strategy = DDPStrategy(find_unused_parameters=True),
+        strategy = DDPStrategy(find_unused_parameters=True),
         #precision=64,  # Using mixed precision
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger,
