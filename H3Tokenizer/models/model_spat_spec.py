@@ -180,6 +180,7 @@ class SpatSpecModel(nn.Module):
             nan_mask = torch.ones_like(x, dtype=bool)
         
         #Encoder
+        if 
         fused_proj, spat_ids_restore, spec_ids_restore, spec_mask, _ = self.encoder(x, enc_mask)
 
         # Quantization
