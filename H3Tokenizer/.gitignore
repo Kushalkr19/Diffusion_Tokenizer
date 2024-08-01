@@ -9,3 +9,4 @@ models/pretrained/hypersigma*
 *.pkl
 *.ckpt
 *.pyc
+*.out
