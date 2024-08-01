@@ -5,4 +5,7 @@ log_*
 output_*
 error_*
 output_*
-models/hypersigma*
+models/pretrained/hypersigma*
+*.pkl
+*.ckpt
+*.pyc

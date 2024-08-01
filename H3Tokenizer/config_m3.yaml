@@ -5,7 +5,7 @@ model:
   image_size: 128
   use_ckpt: false
   num_tokens: 36
-  num_channels: 72
+  num_channels: 1
   enc_dim: 768
   mask_ratio: 0.0
   ckpt: ''
@@ -31,7 +31,7 @@ loss:
   norm_pix_loss: False
 
 training:
-  batch_size: 200
+  batch_size: 256
   epochs: 100  # Reduced for faster testing
   accum_iter: 1
   use_ckpt: 'none'
@@ -48,11 +48,13 @@ testing:
 data:
   num_workers: 4
   pin_mem: False
-  root: '/work/pi_mparente_umass_edu/data/LunarData/TokenizerData/'
-  name: 'caliberated_data'
+  root: '/home/tejaspanambur/fdl-2024-lunar/H3Tokenizer/data/'
+  name: 'geochemical_maps'
+  file: 'Global20ppd_LPGRS_geotiff_Ti.npy'
+  folder: False
   
 output:
-  dir: './output_dir_all_cb65'
+  dir: './Ti_tokens/'
   log_dir: './log_dir_m3'
 
 system:

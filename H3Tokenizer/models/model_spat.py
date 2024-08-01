@@ -6,7 +6,7 @@ import os
 
 class SpatialModel(nn.Module):
     def __init__(self, config):
-        super(SpatialOnlyModel, self).__init__()
+        super(SpatialModel, self).__init__()
         model_args = config['model']
         self.quant_args = config['quantizer']
         self.enc_dim = self.quant_args['latent_dim']
@@ -23,7 +23,7 @@ class SpatialModel(nn.Module):
         
         self.debug = config['debug']
         
-    def _load_weights_spat(self, weights_root: str="/work/tpanambur_umass_edu/Experiments/Algorithm/Moon/fdl-2024-lunar/H3Tokenizer/models/hypersigma_weights/", name: str="spat-vit-base-ultra-checkpoint-1599.pth"):
+    def _load_weights_spat(self, weights_root: str="models/pretrained/hypersigma_weights/", name: str="spat-vit-base-ultra-checkpoint-1599.pth"):
         if not os.path.exists(os.path.join(weights_root, name)):
             return 
         model = torch.load(os.path.join(weights_root, name), map_location=torch.device('cpu'))

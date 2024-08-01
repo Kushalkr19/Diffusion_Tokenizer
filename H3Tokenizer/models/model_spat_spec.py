@@ -38,7 +38,7 @@ class SpatSpecModel(nn.Module):
         self.debug = config['debug']
         self.spat_spec = config['model']['spat_spec']
         
-    def _load_weights_spat(self, weights_root: str="/work/tpanambur_umass_edu/Experiments/Algorithm/Moon/fdl-2024-lunar/H3Tokenizer/models/hypersigma_weights/", name: str="spat-vit-base-ultra-checkpoint-1599.pth"):
+    def _load_weights_spat(self, weights_root: str="models/pretrained/hypersigma_weights/", name: str="spat-vit-base-ultra-checkpoint-1599.pth"):
         """Loads matching weights into the SPATIAL model.
 
         Args:
@@ -57,7 +57,7 @@ class SpatSpecModel(nn.Module):
                     
         print('=================Loaded Spat Weights==================')
 
-    def _load_weights_spec(self, weights_root: str="/work/tpanambur_umass_edu/Experiments/Algorithm/Moon/fdl-2024-lunar/H3Tokenizer/models/hypersigma_weights/", name: str="spec-vit-base-ultra-checkpoint-1599.pth"):
+    def _load_weights_spec(self, weights_root: str="models/pretrained/hypersigma_weights/", name: str="spec-vit-base-ultra-checkpoint-1599.pth"):
         """Loads matching weights into the SPECTRAL model.
 
         Args:
@@ -180,7 +180,6 @@ class SpatSpecModel(nn.Module):
             nan_mask = torch.ones_like(x, dtype=bool)
         
         #Encoder
-        if 
         fused_proj, spat_ids_restore, spec_ids_restore, spec_mask, _ = self.encoder(x, enc_mask)
 
         # Quantization

@@ -9,14 +9,16 @@ from typing import Dict, List, Tuple, Union
 
 class CubeData(Dataset):
     """Cube Dataset"""
-    def __init__(self, root: str, name: str, transform=None) -> None:
+    def __init__(self, root: str, name: str, transform=None, folder=True, file=None) -> None:
         """Create a dataset from a given directory and pickle file."""
         super().__init__()
         self.transform = transform
         self.root = root
         self.name = name
-
-        self.cubeFileNames = [f for f in os.listdir(os.path.join(self.root, name, "python")) if ".npy" in f]
+        if folder:
+            self.cubeFileNames = [f for f in os.listdir(os.path.join(self.root, name, "python")) if ".npy" in f]
+        else:
+            self.cubeFileNames = [file] #os.path.join(self.root, name, "python", file)
         if len(self.cubeFileNames) == 0:
             raise ValueError("Couldn't find any numpy files in given folder!")
         
@@ -24,8 +26,8 @@ class CubeData(Dataset):
         if not os.path.exists(os.path.join(root, f"selected_patches/{self.name}.pkl")):
             raise ValueError(f"Selected Patches file not found in {os.path.join(root, f'selected_patches/{self.name}.pkl')}")
         with open(os.path.join(root, f"selected_patches/{self.name}.pkl"), 'rb') as f:
-            self.selected_patches = pickle.load(f)
-
+            selected_patches = pickle.load(f)
+        self.selected_patches = {k.replace('.npy',''): v for k,v in selected_patches.items()}
         self.lookupIdx = self.__create_idx_lookup_table()
 
     def __load_cubes_old(self) -> Dict[str, np.ndarray]:
@@ -40,7 +42,7 @@ class CubeData(Dataset):
         print(f"Total size of loaded cubes: {total_size / (1024**3):.2f} GB")
         return cubes
     
-    def __load_cubes(self) -> Dict[str, np.ndarray]:
+    def __load_cubes_m3(self) -> Dict[str, np.ndarray]:
         """Loads all cubes contained in the folder and stores them in a dictionary indexed by filename."""
         cubes = {}
         total_size = 0
@@ -53,12 +55,39 @@ class CubeData(Dataset):
 
         print(f"Total size of loaded cubes: {total_size / (1024**3):.2f} GB")
         return cubes
+    
+    def __load_and_reshape(self,file_path):
+        # Load the data
+        current_cube = np.load(file_path)#, mmap_mode='r
+        
+        # Check if the array is 2D
+        if current_cube.ndim == 2:
+            # Add a new axis at the beginning (axis=0)
+            current_cube = np.expand_dims(current_cube, axis=0).astype(np.float32)
+    
+        return current_cube
+    
+    def __load_cubes(self) -> Dict[str, np.ndarray]:
+        """Loads all cubes contained in the folder and stores them in a dictionary indexed by filename."""
+        cubes = {}
+        total_size = 0
+        for file in self.cubeFileNames:
+            file_path = os.path.join(self.root, self.name, "python", file)
+            current_cube = self.__load_and_reshape(file_path)  # Memory-map the file
+            fileName = file.split('.')[0]
+            cubes[fileName] = current_cube
+            total_size += current_cube.nbytes
+
+        print(f"Total size of loaded cubes: {total_size / (1024**3):.2f} GB")
+        return cubes
 
     def __create_idx_lookup_table(self) -> List[Tuple[str, int]]:
         """Creates a lookup table of form: [('file1', 0), ('file1', 1), ('file1', 2), ... ('file3', 42)]"""
         lookup = []
         for file in self.cubeFileNames:
             fileName = file.split('.')[0]
+            #print(self.selected_patches.keys())
+            #print(fileName)
             len_patches = self.selected_patches[fileName].shape[0]
             lookup += list(zip(repeat(fileName), range(0, len_patches)))
         return lookup
@@ -71,9 +100,11 @@ class CubeData(Dataset):
             index = index.tolist()
 
         if isinstance(index, int):
+           
             fileName, localIdx = self.lookupIdx[index]
             xmin, xmax, ymin, ymax = self.selected_patches[fileName][localIdx, :]
-            selectedPatches = torch.from_numpy(self.cubes[fileName][:, ymin:ymax, xmin:xmax].copy())
+            selectedPatches = torch.from_numpy(self.cubes[fileName][:, ymin:ymax, xmin:xmax].copy()) #.copy()
+            
         elif isinstance(index, list):
             selectedPatches = []
             for cIndex in index:
@@ -118,18 +149,17 @@ class CubeData(Dataset):
         return mask
 
 if __name__ == "__main__":
-    data = CubeData("/work/pi_mparente_umass_edu/data/LunarData/TokenizerData/", "caliberated_data")
+    data = CubeData("/home/tejaspanambur/fdl-2024-lunar/H3Tokenizer/data/", "geochemical_maps", folder=False, file='Global20ppd_LPGRS_geotiff_Ti.npy')
     print(f"len(data)={len(data)}")
 
     someCube, someMask = data[42]
     someSlicedCubes, someSlicedMasks = data[10:42]
     someOtherCubes, someOtherMasks = data[[0, 2, 5, 6]]
-    
     train, test = random_split(data, (0.8, 0.2))
-    test_loader = DataLoader(train, batch_size=32, shuffle=True)
+    test_loader = DataLoader(train, batch_size=2, shuffle=True)
     img, mask = next(iter(test_loader))
     print(img.shape)
     print(mask.shape)
-    
+    print(img.dtype)
 
     print("finished!")

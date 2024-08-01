@@ -18,7 +18,7 @@ import timm.optim.optim_factory as optim_factory
 from models.hs_util import misc
 from models.hs_util.misc import NativeScalerWithGradNormCount as NativeScaler
 from models.model_spat_spec import SpatSpecModel
-from models.model_spat import 
+from models.model_spat import SpatialModel
 from pytorch_lightning.strategies import DDPStrategy
 import time
 from logger import MAELogger
@@ -36,7 +36,11 @@ class MAEPreTrainer(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.config = config
-        self.model =  if config['num_channel'] == 1: Spaelse: SpatSpecModel(config) # CIFAR-10 has 3 channels
+        if config['model']['num_channels'] == 1: 
+            self.model =  SpatialModel(config) 
+            print('Training Spatial Model Only!!!')
+        else:
+            self.model =  SpatSpecModel(config) # CIFAR-10 has 3 channels
         self.loss_scaler = NativeScaler()
         self.mae_logger = None
         self.mse_metric = MeanSquaredError(squared=True)
@@ -189,7 +193,9 @@ def main(config_path):
     
     dataset = CubeData(
         root=config['data']['root'],
-        name=config['data']['name']
+        name=config['data']['name'],
+        folder=config['data']['folder'],
+        file=config['data']['file']
     )
 
     # Split dataset into train and validation sets

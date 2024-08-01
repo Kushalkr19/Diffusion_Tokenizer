@@ -73,13 +73,13 @@ class MAELogger:
 
             # Original image
             orig_img = np.transpose(sample, (1, 2, 0))
-            axs[i, 0].imshow(orig_img[:,:,41])
+            axs[i, 0].imshow(orig_img[:,:,0])
             axs[i, 0].set_title('Original', fontsize=20)  # Increased font size
             axs[i, 0].axis('off')
 
             # Spatial reconstruction
             spat_recon_img = np.transpose(spat_recon_img, (1, 2, 0))
-            axs[i, 1].imshow(spat_recon_img[:,:,41])
+            axs[i, 1].imshow(spat_recon_img[:,:,0])
             axs[i, 1].set_title('Spat Recon', fontsize=20)  # Increased font size
             axs[i, 1].axis('off')
 
