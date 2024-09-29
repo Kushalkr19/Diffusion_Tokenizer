@@ -1,0 +1,75 @@
+# config.yaml
+
+model:
+    patch_size: 16
+    image_size: 128
+    use_ckpt: false
+    num_tokens: 36
+    num_channels: 1
+    enc_dim: 768
+    mask_ratio: 0.0
+    ckpt: ''
+    spat_spec: false
+    out_conv: true
+    drop_path_rate: 0.0
+    out_conv_type: 1
+    
+quantizer:
+    quant_type: lucid
+    latent_dim: 768
+    codebook_size: 65536
+    num_codebooks: 1
+    norm_codes: true
+    threshold_ema_dead_code: 32.0
+    code_replacement_policy: batch_random
+    sync_codebook: true
+    ema_decay: 0.99
+    commitment_weight: 0.9
+    norm_latents: true
+    kmeans_init: false
+
+debug: False
+
+loss:
+  norm_pix_loss: False
+  use_percept: True
+  model_id: 'vit_base_patch16_224_dino'
+  feature_ids: 'blocks.2-blocks.5-blocks.8-blocks.11'
+  
+
+training:
+  batch_size: 120
+  epochs: 100  # Reduced for faster testing
+  accum_iter: 1
+  use_ckpt: 'none'
+  lr: 0.00015  # Adjusted for CIFAR-10
+  min_lr: 0.0
+  weight_decay: 0.0005
+  warmup_epochs: 50
+  sanity_check_frequency: 10  # Run sanity check every 1000 steps
+  
+  
+post_mlp: False
+mlp_ratio: 4
+  
+testing:
+  batch_size: 256
+    
+
+data:
+  num_workers: 4
+  pin_mem: False
+  root: '/work/pi_mparente_umass_edu/data/LunarData/' #'/home/tejaspanambur/fdl-2024-lunar/H3Tokenizer/data/'
+  name: 'geochemical_maps'
+  file: 'Global20ppd_MLR_LPGRS_geotiffFe.npy'
+  folder: False
+  
+output:
+  dir: './v1/Global20ppd_MLR_LPGRS_geotiffFe_tokens/'
+  log_dir: './v1/log_dir/Global20ppd_MLR_LPGRS_geotiffFe_tokens/'
+
+system:
+  seed: 42
+  gpu_num: 4  # Adjust based on your system
+  num_nodes: 1
+  port: null

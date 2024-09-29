@@ -1,7 +1,7 @@
 # config.yaml
 
 model:
-  patch_size: 8
+  patch_size: 1
   image_size: 32
   use_ckpt: false
   num_tokens: 1

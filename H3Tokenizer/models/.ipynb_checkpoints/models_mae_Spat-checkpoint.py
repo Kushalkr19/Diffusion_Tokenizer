@@ -473,12 +473,12 @@ class SpatMAE(nn.Module):
         return loss, pred, mask
 
 
-def spat_mae_b(args, inchannels=3):
+def spat_mae_b(args, inchannels=3,drop_path_rate=0.1):
     backbone = SpatMAE(
         img_size=args['image_size'],
         in_chans=inchannels,
         patch_size=args['patch_size'],
-        drop_path_rate=0.1,
+        drop_path_rate=drop_path_rate,
         out_indices=[3, 5, 7, 11],
         embed_dim=args['enc_dim'],
         depth=12,

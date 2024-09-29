@@ -10,3 +10,7 @@ models/pretrained/hypersigma*
 *.ckpt
 *.pyc
 *.out
+v1
+Ti*
+.ipynb_checkpoints/*
+models/hypersigma*

@@ -22,8 +22,7 @@ class SpatSpecModel(nn.Module):
         #Load Pretrained
         self._load_weights_spat()
         self._load_weights_spec()
-        
-        
+          
         # Set up quantizer
         self.quantizer = self._get_quantizer()
         
