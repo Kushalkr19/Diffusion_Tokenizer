@@ -1,33 +1,54 @@
+# models/model_spat.py
+
 import torch
 import torch.nn as nn
-from .models_mae_Spat import spat_mae_b
-from .quantizers import VectorQuantizerLucid, Memcodes
+import torch.nn.functional as F
+from einops import rearrange
+import yaml
 import os
-from .percept_loss import TimmPerceptualLoss
+from PIL import Image
+import matplotlib.pyplot as plt
 
+# Relative import for models_mae_Spat
+from models.models_mae_Spat import spat_mae_b
+
+# Import fourm classes
+from models.ml_4m.fourm.vq.quantizers import VectorQuantizerLucid, Memcodes
+from models.ml_4m.fourm.vq.vqvae import DiVAE
+from models.percept_loss import TimmPerceptualLoss
+from models.ml_4m.fourm.vq.scheduling import DDIMScheduler, PipelineCond
+
+# Import diffusion models from diffusers
+from diffusers import UNet2DConditionModel, UNet2DModel
+
+# Import utility functions
+from models.ml_4m.fourm.utils import denormalize, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def get_rank():
+    if torch.distributed.is_initialized():
+        return torch.distributed.get_rank()
+    return 0  # Default to 0 if not initialized
+
+def all_reduce_fn(tensor, use_distributed=False):
+    # Perform all_reduce only if distributed is initialized and use_distributed is True
+    if torch.distributed.is_initialized() and use_distributed:
+        torch.distributed.all_reduce(tensor)
+    else:
+        print("Skipping all_reduce as distributed is not initialized or necessary.")
 
 def drop_path(x, drop_prob: float = 0., training: bool = False):
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
-    This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
-    the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
-    See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for
-    changing the layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use
-    'survival rate' as the argument.
-    """
     if drop_prob == 0. or not training:
         return x
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with different dim tensors, not just 2D ConvNets
     random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
     random_tensor.floor_()  # binarize
     output = x.div(keep_prob) * random_tensor
     return output
 
-
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
-    """
-
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
@@ -36,252 +57,216 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training)
 
     def extra_repr(self) -> str:
-        return 'p={}'.format(self.drop_prob)
+        return f'p={self.drop_prob}'
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
-        out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = nn.Linear(in_features, hidden_features)
         self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.fc2 = nn.Linear(hidden_features, out_features or in_features)
         self.drop = nn.Dropout(drop)
 
     def forward(self, x):
         x = self.fc1(x)
         x = self.act(x)
-        # x = self.drop(x)
-        # commit this for the orignal BERT implement 
         x = self.fc2(x)
         x = self.drop(x)
         return x
-    
-class ConvNeXtBlock(nn.Module):
-    r""" ConvNeXt Block. There are two equivalent implementations:
-    (1) DwConv -> LayerNorm (channels_first) -> 1x1 Conv -> GELU -> 1x1 Conv; all in (N, C, H, W)
-    (2) DwConv -> Permute to (N, H, W, C); LayerNorm (channels_last) -> Linear -> GELU -> Linear; Permute back
-    We use (2) as we find it slightly faster in PyTorch.
 
-    From https://github.com/facebookresearch/ConvNeXt/blob/main/models/convnext.py
-    
-    Args:
-        dim (int): Number of input channels.
-        drop_path (float): Stochastic depth rate. Default: 0.0
-        layer_scale_init_value (float): Init value for Layer Scale. Default: 1e-6.
-    """
-    def __init__(self, dim, drop_path=0.,kernel_size=7, padding=3, layer_scale_init_value=1e-6):
+class ConvNeXtBlock(nn.Module):
+    def __init__(self, dim, drop_path=0., kernel_size=7, padding=3, layer_scale_init_value=1e-6):
         super().__init__()
-        self.dwconv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=padding, groups=dim) # depthwise conv
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=padding, groups=dim)  # depthwise conv
         self.norm = nn.LayerNorm(dim, eps=1e-6)
-        self.pwconv1 = nn.Linear(dim, 4 * dim) # pointwise/1x1 convs, implemented with linear layers
+        self.pwconv1 = nn.Linear(dim, 4 * dim)  # pointwise/1x1 convs, implemented with linear layers
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(4 * dim, dim)
-        self.gamma = nn.Parameter(layer_scale_init_value * torch.ones((dim)), 
-                                    requires_grad=True) if layer_scale_init_value > 0 else None
+        if layer_scale_init_value > 0:
+            self.gamma = nn.Parameter(layer_scale_init_value * torch.ones((dim)), requires_grad=True)
+        else:
+            self.gamma = None
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x):
         input = x
         x = self.dwconv(x)
-        x = x.permute(0, 2, 3, 1) # (N, C, H, W) -> (N, H, W, C)
+        x = x.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
         x = self.norm(x)
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
         if self.gamma is not None:
             x = self.gamma * x
-        x = x.permute(0, 3, 1, 2) # (N, H, W, C) -> (N, C, H, W)
+        x = x.permute(0, 3, 1, 2)  # (N, H, W, C) -> (N, C, H, W)
 
         x = input + self.drop_path(x)
         return x
-    
+
 class SpatialModel(nn.Module):
     def __init__(self, config):
         super(SpatialModel, self).__init__()
-        model_args = config['model']
-        self.quant_args = config['quantizer']
-        self.enc_dim = config['model']['enc_dim']
-        self.latent_dim = self.quant_args['latent_dim']
-        self.norm_pix_loss = config['loss']['norm_pix_loss']
+        self.config = config
         self.perceptloss = None
+        self.in_channels = config['model']['num_channels']
+        self.image_size = config['model']['image_size']
+
         if config['loss']['use_percept']:
-            self.perceptloss = TimmPerceptualLoss(config['loss']['model_id'],config['loss']['feature_ids']).eval()
-            
-        
-        # Initialize spatial encoder
-        self.spatial_encoder = spat_mae_b(model_args, model_args['num_channels'], drop_path_rate=model_args['drop_path_rate'])
-        
-        print('Loading pre-trained weights')
-        self._load_weights_spat()
-        
-        # Set up quantizer
-        self.quantizer = self._get_quantizer()
-        if config['post_mlp']:
-            print('MLP')
-            self.norm_mlp_enc = nn.LayerNorm(model_args['enc_dim'])
-            self.post_mlp_enc = Mlp(model_args['enc_dim'], int(config['mlp_ratio']*model_args['enc_dim']), act_layer=nn.Tanh)
-            self.norm_mlp_dec = nn.LayerNorm(model_args['enc_dim'])
-            self.post_mlp_dec = Mlp(model_args['enc_dim'], int(config['mlp_ratio']*model_args['enc_dim']), act_layer=nn.Tanh)
-            
-        if self.enc_dim!=self.latent_dim:
-            print('Dim reduction')
-            self.quant_proj = torch.nn.Conv2d(self.enc_dim, self.latent_dim, 1)
-            self.post_quant_proj = torch.nn.Conv2d(self.latent_dim, self.enc_dim, 1)
-            
-        if config['model']['out_conv']:
-            print('Convnext End', model_args['out_conv_type'])
-            if model_args['out_conv_type']==1:
-                self.out_conv = nn.Sequential(ConvNeXtBlock(dim=model_args['num_channels']),
-                                              ConvNeXtBlock(dim=model_args['num_channels']))
-            elif model_args['out_conv_type']==2:
-                self.out_conv = nn.Sequential(ConvNeXtBlock(dim=model_args['num_channels']),
-                                              ConvNeXtBlock(dim=model_args['num_channels']),
-                                              ConvNeXtBlock(dim=model_args['num_channels']),
-                                            ConvNeXtBlock(dim=model_args['num_channels']))
-            elif model_args['out_conv_type']==3:
-                self.out_conv = nn.Sequential(ConvNeXtBlock(dim=model_args['num_channels'],kernel_size=3,padding=1),
-                                              ConvNeXtBlock(dim=model_args['num_channels'],kernel_size=3,padding=1),
-                                            ConvNeXtBlock(dim=model_args['num_channels']),
-                                            ConvNeXtBlock(dim=model_args['num_channels']))
-                                                      
-        self.debug = config['debug']
-        
-    def _load_weights_spat(self, weights_root: str="models/hypersigma_weights/", name: str="spat-vit-base-ultra-checkpoint-1599.pth"):
-        if not os.path.exists(os.path.join(weights_root, name)):
-            return 
-        model = torch.load(os.path.join(weights_root, name), map_location=torch.device('cpu'))
-        available_weight_keys = model['model'].keys()
+            self.perceptloss = TimmPerceptualLoss(
+                model_id=config['loss']['model_id'],
+                feature_ids=config['loss']['feature_ids'].split('-')
+            ).eval().to(device)
 
-        for name, param in self.spatial_encoder.named_parameters():
-            if name in available_weight_keys:
-                if param.data.shape == model['model'][name].shape:
-                    param.data = model['model'][name]
-                    
-        print('=================Loaded Spat Weights==================')
+        # Load the pretrained DiVAE model
+        pretrained_model_id = 'EPFL-VILAB/4M_tokenizers_rgb_16k_224-448'
+        print(f"Loading pretrained DiVAE model from: {pretrained_model_id}")
+        self.divae = DiVAE.from_pretrained(pretrained_model_id)#.to(device)
+        self.divae.train()
+        self.divae.prediction_type = 'sample'  # Set prediction_type as needed
 
-    def _get_quantizer(self):
-        if self.quant_args['quant_type'] == 'lucid':
-            return VectorQuantizerLucid(
-                dim=self.latent_dim,
-                codebook_size=self.quant_args['codebook_size'],
-                codebook_dim=self.latent_dim,
-                heads=self.quant_args['num_codebooks'],
-                use_cosine_sim=self.quant_args.get('norm_codes', False),
-                threshold_ema_dead_code=self.quant_args.get('threshold_ema_dead_code', 2),
-                code_replacement_policy=self.quant_args.get('code_replacement_policy', 'random'),
-                sync_codebook=self.quant_args.get('sync_codebook', False),
-                decay=self.quant_args.get('ema_decay', 0.99),
-                commitment_weight=self.quant_args['commitment_weight'],
-                norm_latents=self.quant_args.get('norm_latents', False),
-                kmeans_init=self.quant_args.get('kmeans_init', False),
-            )
-        elif self.quant_args['quant_type'] == 'memcodes':
-            return Memcodes(
-                dim=self.quant_args['latent_dim'],
-                codebook_size=self.quant_args['codebook_size'],
-                heads=self.quant_args['num_codebooks'],
-                temperature=1.0,
-            )
+        # Use the noise scheduler from DiVAE
+        self.num_train_timesteps = self.divae.noise_scheduler.config.num_train_timesteps
+        print(self.num_train_timesteps)
+        # Ensure all parameters are trainable
+        # for name, param in self.divae.named_parameters():
+        #     param.requires_grad = True
+        #         # Freeze decoder parameters
+        for name, param in self.divae.named_parameters():
+            if "decoder" in name:
+                param.requires_grad = False
+                print(f"Froze decoder parameter: {name}")
+
+        # Unfreeze blocks 10 and above in the encoder
+        for name, param in self.divae.encoder.named_parameters():
+            #"blocks.10" in name or
+            if (
+                "blocks.11" in name or
+                "norm_mlp" in name or "post_mlp" in name
+            ):
+                param.requires_grad = True
+                print(f"Unfroze encoder parameter: {name}")
+            else:
+                param.requires_grad = False
+                print(f"Froze encoder parameter: {name}")
+
+        # Check parameters in quant_proj, quantize, and cls_emb
+        modules_to_check = ['quant_proj', 'quantize', 'cls_emb']
+        print("\nChecking parameters in 'quant_proj', 'quantize', and 'cls_emb' for the codebook...\n")
+
+        for module_name in modules_to_check:
+            if hasattr(self.divae, module_name):
+                module = getattr(self.divae, module_name)
+                if module is not None:  # Check if the module is not None
+                    print(f"\nParameters in module: {module_name}")
+                    for param_name, param in module.named_parameters():
+                        print(f"{module_name}.{param_name}, requires_grad: {param.requires_grad}, shape: {param.shape}")
+                else:
+                    print(f"Module {module_name} exists but is None.")
+            else:
+                print(f"Module {module_name} not found in DiVAE model.")
+        # --- Unfreeze the Last Two Decoder Layers ---
+        # Define the last two decoder layers based on your parameter list
+        # From the provided parameter list, the last two layers appear to be 'decoder.out.0' and 'decoder.out.2'
+        layers_to_unfreeze = ['decoder.out.0', 'decoder.out.2']
+
+        print("\nUnfreezing the last two decoder layers: 'decoder.out.0' and 'decoder.out.2'\n")
+
+        for layer in layers_to_unfreeze:
+            for name, param in self.divae.named_parameters():
+                if name.startswith(layer):
+                    param.requires_grad = True
+                    print(f"Unfroze decoder parameter: {name}")
+    def forward(self, x, nan_mask=None, enc_mask=None, use_diffusion=None, timesteps=None, generator=None, verbose=False, **kwargs):
+        # x: Input image tensor of shape [batch_size, 1, 128, 128]
+
+        # Step 1: Upsample x to [batch_size, 3, 256, 256] and normalize
+        x_resized = F.interpolate(x, size=(256, 256), mode='bilinear', align_corners=False)
+        x_upsampled = x_resized.repeat(1, 3, 1, 1)
+        mean_rgb = torch.tensor(IMAGENET_INCEPTION_MEAN, device=x.device).view(1, 3, 1, 1)
+        std_rgb = torch.tensor(IMAGENET_INCEPTION_STD, device=x.device).view(1, 3, 1, 1)
+        x_normalized = (x_upsampled - mean_rgb) / std_rgb
+
+        # Step 2: Generate random timesteps
+        if timesteps is None:
+            timesteps = torch.randint(0, self.num_train_timesteps, (x.size(0),), device=x.device).long() #, device=device
         else:
-            raise ValueError(f'{self.quant_args["quant_type"]} not a valid quant_type.')
+            timesteps = timesteps.to(x.device).long()
 
-    def encoder(self, x, mask):
-        
-        spat_enc, spat_mask, spat_ids_restore, (spat_Hp, spat_Wp) = self.spatial_encoder.forward_encoder(x, mask)
-        if self.debug: print("spat_enc:", spat_enc.shape)
-        
-        if hasattr(self, 'post_mlp_enc'):
-            spat_enc = spat_enc.float() + self.post_mlp_enc(self.norm_mlp_enc(spat_enc.float()))
-            if self.debug: print("post_mlp_spat_enc:", spat_enc.shape)
+        # Step 3: Generate noise
+        noise = torch.randn_like(x_normalized)
 
-        spat_enc = spat_enc.transpose(1, 2).reshape(-1, self.enc_dim, spat_Hp, spat_Wp)
-        if self.debug: print("spat_enc_reshaped:", spat_enc.shape) 
-        
-        if hasattr(self, 'quant_proj'):
-            spat_enc = self.quant_proj(spat_enc)
-            if self.debug: print("spat_enc_quant_proj:", spat_enc.shape)
+        # Step 4: Add noise to the clean images according to the noise magnitude at each timestep
+        noisy_images = self.divae.noise_scheduler.add_noise(x_normalized, noise, timesteps)
 
-        return spat_enc, spat_ids_restore, spat_mask
+        # Step 5: Forward pass through DiVAE model
+        # This will internally encode the images and decode
+        model_output, code_loss = self.divae(x_normalized, noisy_images, timesteps)
 
-    def decoder(self, quant_enc, spat_ids_restore):
-        
-        B, _, _, _ = quant_enc.shape
-        if hasattr(self, 'post_quant_proj'):
-            quant_enc = self.post_quant_proj(quant_enc)
-            if self.debug: print("spat_dec_quant_proj:", quant_enc.shape)
+        # Step 6: Determine target based on prediction_type
+        if self.divae.prediction_type == 'sample':
+            target = x
+            #Downsample the reconstructed image to match the original input size
+            model_output = F.interpolate(model_output, size=(128, 128), mode='area')
+            model_output = model_output.mean(dim=1, keepdim=True)  # Convert to grayscale
             
-        spat_latent = quant_enc.reshape(B, self.enc_dim, -1).transpose(1, 2)
-        if self.debug: print("spat_latent:", spat_latent.shape)
-        
-        if hasattr(self, 'post_mlp_dec'):
-            spat_latent = spat_latent.float() + self.post_mlp_dec(self.norm_mlp_dec(spat_latent.float()))
-            if self.debug: print("post_mlp_spat_dec:", spat_latent.shape)
+        elif self.divae.prediction_type == 'epsilon':
+            target = noise
+        elif self.divae.prediction_type == 'v_prediction':
+            target = self.divae.noise_scheduler.get_velocity(x_normalized, noise, timesteps)
+        else:
+            raise ValueError(f"Unknown prediction_type: {self.divae.prediction_type}")
 
         
-        spat_dec = self.spatial_encoder.forward_decoder(spat_latent, spat_ids_restore)
-        if self.debug: print("spat_dec:", spat_dec.shape)
-            
-        
-        spat_dec = self.spatial_encoder.unpatchify(spat_dec)
-        
-        
-        if hasattr(self, 'out_conv'):
-            spat_dec = self.out_conv(spat_dec)
-            if self.debug: print("out_conv_spat_dec:", spat_dec.shape)
-       
-        return spat_dec
 
-    def forward(self, x, nan_mask=None, enc_mask=0.0):
-        if self.debug: print("x:", x.shape)
-        if self.debug: print("nan_mask:", nan_mask.shape)
+        # Step 9: Compute final reconstruction loss between x and x_downsampled
         
-        if nan_mask is None:
-            nan_mask = torch.ones_like(x, dtype=bool)
-        
-        # Encoder
-        spat_proj, spat_ids_restore, spat_mask = self.encoder(x, enc_mask)
+        #final_recon_loss = self.recon_loss(target, model_output, nan_mask)
+        final_recon_loss = F.mse_loss(target, model_output)
 
-        # Quantization
-        quant_enc, code_loss, tokens = self.quantizer(spat_proj)
-        if self.debug: print("quant_enc:", quant_enc.shape)
-        
-        # Decoder
-        spat_dec = self.decoder(quant_enc, spat_ids_restore)
-        spat_recon_loss = self.recon_loss(x, spat_dec, nan_mask)
-        with torch.no_grad():
-            spat_percept_loss = self.perceptloss(x,spat_dec, True)
-        spat_dec = spat_dec.detach().cpu()
-        
+        # Step 10: Compute perceptual loss if applicable
+        percept_loss_value = 0.0
+        if self.perceptloss is not None:
+            # Convert x and x_downsampled to RGB for perceptual loss
+            original_rgb = x.repeat(1, 3, 1, 1)
+            reconstructed_rgb = x_downsampled.repeat(1, 3, 1, 1)
+            percept_loss_value = self.perceptloss(original_rgb, reconstructed_rgb, preprocess_inputs=True)
 
-        # Return the same structure as SpatSpecModel, with None for unused components
-        return spat_recon_loss, None, spat_percept_loss, code_loss, tokens, spat_dec, None
-    
+        # Step 11: Combine losses
+        commitment_weight = self.config['quantizer'].get('commitment_weight', 1.0)
+        total_loss = final_recon_loss + code_loss * commitment_weight
+        if self.config['loss'].get('use_percept', False):
+            total_loss += percept_loss_value.mean()
+
+        # Return losses and outputs as needed
+        return total_loss, final_recon_loss, percept_loss_value, code_loss, None, model_output, None
+
+
     def recon_loss(self, input, target, nan_mask):
+        # Computes the reconstruction loss (MSE) between input and target, considering the nan_mask.
+        device = input.device
+        target = target.to(device)
+        nan_mask = nan_mask.to(device)
+
+        # Invert nan_mask to get valid regions
         nan_mask = ~nan_mask.bool()
 
-        if self.norm_pix_loss:
-            # Normalize target
-            mean = torch.sum(target * nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True) / torch.sum(nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True)
-            var = torch.sum((target - mean).pow(2) * nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True) / torch.sum(nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True)
-            target = torch.where(nan_mask.unsqueeze(1), (target - mean) / (var + 1.e-6).sqrt(), target)
-
-            # Normalize input
-            mean_input = torch.sum(input * nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True) / torch.sum(nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True)
-            var_input = torch.sum((input - mean_input).pow(2) * nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True) / torch.sum(nan_mask.unsqueeze(1), dim=(2, 3), keepdim=True)
-            input = torch.where(nan_mask.unsqueeze(1), (input - mean_input) / (var_input + 1.e-6).sqrt(), input)
-
-        # Calculate loss only for non-nan values
+        # Calculate loss only for non-NaN values
         diff = (input - target) * nan_mask
         loss = torch.sum(diff.pow(2)) / torch.sum(nan_mask)
 
         return loss
 
-    
     def tokenize(self, x, mask=0.0):
-        # Encoder
-        spat_proj, _, _ = self.encoder(x, mask)
+        # Convert grayscale to RGB if necessary
+        if self.in_channels == 1 and x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
 
-        # Quantization
-        _, _, tokens = self.quantizer(spat_proj)
+        # Normalize the input image
+        mean_rgb = torch.tensor(IMAGENET_INCEPTION_MEAN).view(1, 3, 1, 1).to(x.device)
+        std_rgb = torch.tensor(IMAGENET_INCEPTION_STD).view(1, 3, 1, 1).to(x.device)
+        x_normalized = (x - mean_rgb) / std_rgb
+
+        # Encoder
+        quant_enc, code_loss, tokens = self.divae.encode(x_normalized)
         return tokens

@@ -150,7 +150,7 @@ class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
     """
 
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
+    def __init__(self, img_size=224, patch_size=16, in_chans=1, embed_dim=768):
         super().__init__()
 
         img_size = to_2tuple(img_size)
@@ -228,7 +228,7 @@ class SpatMAE(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
 
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=80, embed_dim=768, depth=12,
+    def __init__(self, img_size=224, patch_size=16, in_chans=1, num_classes=80, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., hybrid_backbone=None, norm_layer=None, init_values=None, use_checkpoint=False,
                  use_abs_pos_emb=True, use_rel_pos_bias=False, use_shared_rel_pos_bias=False,
@@ -248,6 +248,7 @@ class SpatMAE(nn.Module):
             self.patch_embed = PatchEmbed(
                 img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
 
+        print(f"PatchEmbed initialized with in_chans={in_chans}")
         num_patches = self.patch_embed.num_patches
 
         self.out_indices = out_indices
@@ -373,6 +374,11 @@ class SpatMAE(nn.Module):
         Per-sample shuffling is done by argsort random noise.
         x: [N, L, D], sequence
         """
+        if isinstance(mask_ratio, torch.Tensor):
+            if mask_ratio.numel() == 1:
+                mask_ratio = mask_ratio.item()
+            else:
+                raise ValueError("mask_ratio must be a scalar or a single-element tensor.")
         N, L, D = x.shape  # batch, length, dim
         len_keep = int(L * (1 - mask_ratio))  # the remained token number
 
@@ -397,23 +403,30 @@ class SpatMAE(nn.Module):
         return x_masked, mask, ids_restore
 
     def forward_encoder(self, x, mask_ratio):
+        # Embed patches
+        x, (Hp, Wp) = self.patch_embed(x)
+        print(f"Patch Embed Output Shape: {x.shape}, Hp: {Hp}, Wp: {Wp}")
 
-        # embed patches
-        x,(Hp,Wp) = self.patch_embed(x)
-       # cls_token doesn't have positional encod.
+        if isinstance(mask_ratio, torch.Tensor):
+            if mask_ratio.numel() == 1:
+                mask_ratio = mask_ratio.item()
+            else:
+                raise ValueError("mask_ratio must be a scalar or a single-element tensor.")
 
-        # masking: length -> length * mask_ratio
+        # Masking: length -> length * mask_ratio
         x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        print(f"After Masking Shape: {x.shape}")
 
-        # apply Transformer blocks
+        # Apply Transformer blocks
         for blk in self.blocks:
             if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x,Hp, Wp)
+                x = checkpoint.checkpoint(blk, x, Hp, Wp)
             else:
-                x = blk(x,Hp, Wp)
+                x = blk(x, Hp, Wp)
         x = self.norm(x)
 
-        return x, mask, ids_restore, (Hp,Wp)
+        return x, mask, ids_restore, (Hp, Wp)
+
 
     def forward_decoder(self, x, ids_restore):
         # embed tokens
@@ -473,7 +486,7 @@ class SpatMAE(nn.Module):
         return loss, pred, mask
 
 
-def spat_mae_b(args, inchannels=3,drop_path_rate=0.1):
+def spat_mae_b(args, inchannels=1,drop_path_rate=0.1):
     backbone = SpatMAE(
         img_size=args['image_size'],
         in_chans=inchannels,

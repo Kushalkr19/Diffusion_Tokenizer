@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from .models_mae_Spat import spat_mae_b
 from .models_mae_Spec import spec_mae_b
-from .quantizers import VectorQuantizerLucid, Memcodes
+from .ml_4m.fourm.vq.quantizers import VectorQuantizerLucid, Memcodes
 import os
 
 class SpatSpecModel(nn.Module):

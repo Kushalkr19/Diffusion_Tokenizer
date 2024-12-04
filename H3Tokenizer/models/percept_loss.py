@@ -57,7 +57,7 @@ class TimmPerceptualLoss(nn.Module):
         self.data_config = self.model.default_cfg #timm.data.resolve_model_data_config(self.model)
 
         self.percept_transform = transforms.Compose([
-            transforms.Normalize((-1.0, -1.0, -1.0), (2.0, 2.0, 2.0)), # [-1, 1] -> [0, 1]
+            # transforms.Normalize((-1.0, -1.0, -1.0), (2.0, 2.0, 2.0)), # [-1, 1] -> [0, 1]
             transforms.Normalize(self.data_config['mean'], self.data_config['std']), # [0, 1] -> standardize with pre-computed statistics
             transforms.Resize(self.data_config['input_size'][-2:], interpolation=TF.InterpolationMode.BILINEAR, antialias=True),
         ])
@@ -79,8 +79,10 @@ class TimmPerceptualLoss(nn.Module):
             Perceptual loss between predictions and targets.
         """
         # Preprocess predictions and targets for the given feature extractor
-        preds = torch.nan_to_num(preds, nan=0.0).repeat(1, 3, 1, 1)
-        targets = torch.nan_to_num(targets, nan=0.0).repeat(1, 3, 1, 1)
+        print("preds shape:", preds.shape)
+        print("targets shape:", targets.shape)
+        preds = torch.nan_to_num(preds, nan=0.0)
+        targets = torch.nan_to_num(targets, nan=0.0)
         if preprocess_inputs:
             preds = self.percept_transform(preds)
             targets = self.percept_transform(targets)
