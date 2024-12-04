@@ -124,6 +124,7 @@ class SpatialModel(nn.Module):
         self.divae = DiVAE.from_pretrained(pretrained_model_id)#.to(device)
         self.divae.train()
         self.divae.prediction_type = 'sample'  # Set prediction_type as needed
+        self.num_train_timesteps = config['scheduler']['num_train_timesteps']
 
         # Use the noise scheduler from DiVAE
         self.num_train_timesteps = self.divae.noise_scheduler.config.num_train_timesteps
