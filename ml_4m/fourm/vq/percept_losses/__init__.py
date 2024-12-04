@@ -1,0 +1,1 @@
+from .timm_perceptual_loss import TimmPerceptualLoss as PerceptualLoss
